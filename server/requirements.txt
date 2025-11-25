@@ -1,0 +1,14 @@
+pillow
+pytesseract
+pdfplumber
+pandas
+requests
+fastapi
+uvicorn
+python-multipart
+paddlepaddle
+paddleocr
+flask
+flask-cors
+gunicorn
+
