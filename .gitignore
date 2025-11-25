@@ -63,3 +63,10 @@ htmlcov/
 dist/
 .vite/
 coverage/
+
+# Ignore client embedded git backup and local git metadata
+client/.git
+client/.git-backup
+
+# Ignore server node modules
+server/node_modules/
