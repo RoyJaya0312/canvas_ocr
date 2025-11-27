@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  ocr-api:
+    build: .
+    container_name: ocr_flask_server
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    environment:
+      # these can act as overrides if needed
+      - APP_HOST=0.0.0.0
+      - APP_PORT=5001
+      - DEBUG=false
+      - MAX_CONTENT_LENGTH=20971520
+    volumes:
+      - ./uploads:/app/uploads
+    restart: unless-stopped

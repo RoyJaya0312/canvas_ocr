@@ -70,3 +70,7 @@ client/.git-backup
 
 # Ignore server node modules
 server/node_modules/
+ 
+.env
+tesseract-ocr/
+tessdata/

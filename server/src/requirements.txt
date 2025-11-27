@@ -11,4 +11,6 @@ paddleocr
 flask
 flask-cors
 gunicorn
+python-dotenv
+opencv-python
 

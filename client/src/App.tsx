@@ -10,7 +10,10 @@ function App() {
   const [extractedTables, setExtractedTables] = useState<Array<Array<any>>>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isLoadingDOB, setIsLoadingDOB] = useState<boolean>(false);
-  const [error, setError] = useState<string>("");
+    const [isLoadingText, setIsLoadingText] = useState<boolean>(false);
+    const [isLoadingTables, setIsLoadingTables] = useState<boolean>(false);
+    const [isLoadingAadhar, setIsLoadingAadhar] = useState<boolean>(false);
+    const [error, setError] = useState<string>("");
   const [gallery, setGallery] = useState<Array<{ file: File; url: string }>>(
     []
   );
@@ -43,7 +46,7 @@ function App() {
       return;
     }
 
-    setIsLoading(true);
+      setIsLoadingAadhar(true);
     setError("");
     setAadharNumber("");
 
@@ -73,7 +76,7 @@ function App() {
       setAadharNumber("Error extracting Aadhar number");
       alert("Error extracting Aadhar number: " + errorMsg);
     } finally {
-      setIsLoading(false);
+        setIsLoadingAadhar(false);
     }
   };
 
@@ -184,7 +187,7 @@ function App() {
     // Clear the extracted text immediately when extraction starts
     setExtractedText("");
     setHighlightedText("");
-    setIsLoading(true);
+      setIsLoadingText(true);
     setError("");
 
     const formData = new FormData();
@@ -238,7 +241,7 @@ function App() {
         alert("Error: " + errorMsg);
       }
     } finally {
-      setIsLoading(false);
+        setIsLoadingText(false);
     }
   };
 
@@ -376,7 +379,7 @@ function App() {
       return;
     }
 
-    setIsLoading(true);
+      setIsLoadingTables(true);
     setError("");
     setExtractedTables([]);
 
@@ -430,7 +433,7 @@ function App() {
         alert("Error: " + errorMsg);
       }
     } finally {
-      setIsLoading(false);
+        setIsLoadingTables(false);
     }
   };
 
@@ -451,6 +454,157 @@ function App() {
     document.body.removeChild(link);
   };
 
+  // Helper: find debit/credit header columns (scan top-down) and return top-5 values
+  const parseTopAmounts = (tables: Array<Array<any>>) => {
+    const amountRegex = /-?\(?\d{1,3}(?:[,\d]*)(?:\.\d+)?\)?/g;
+
+    let debitCol: number | null = null;
+    let creditCol: number | null = null;
+
+    // Find first occurrence of debit/credit words scanning from top rows
+    for (let r = 0; r < tables.length; r++) {
+      const row = tables[r] || [];
+      for (let c = 0; c < row.length; c++) {
+        const cell = (row[c] ?? "").toString().toLowerCase();
+        if (debitCol === null && /\bdebit\b|\bdr\b/.test(cell)) {
+          debitCol = c;
+        }
+        if (creditCol === null && /\bcredit\b|\bcr\b/.test(cell)) {
+          creditCol = c;
+        }
+        if (debitCol !== null && creditCol !== null) break;
+      }
+      if (debitCol !== null && creditCol !== null) break;
+    }
+
+    // date detection for left-most column
+    const dateRegex = new RegExp(
+      "(\\b\\d{1,2}[-\\/.]\\d{1,2}[-\\/.]\\d{2,4}\\b)|(\\b\\d{4}[-\\/.]\\d{1,2}[-\\/.]\\d{1,2}\\b)|(" +
+        "\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\s+\\d{1,2},?\\s+\\d{4}\\b)",
+      "i"
+    );
+
+    const isDateCell = (cell: any) => {
+      if (cell == null) return false;
+      const s = cell.toString().trim();
+      if (!s) return false;
+      return dateRegex.test(s);
+    };
+
+    const parseNumber = (raw: string) => {
+      if (!raw) return NaN;
+      let s = raw.toString().trim();
+      const isParen = /^\(.*\)$/.test(s);
+      s = s.replace(/[()]/g, "");
+      s = s.replace(/[^0-9.\-_,]/g, "");
+      s = s.replace(/,/g, "");
+      const n = parseFloat(s);
+      if (isNaN(n)) return NaN;
+      return n;
+    };
+
+    const collectColumnValues = (colIndex: number | null) => {
+      const items: Array<any> = [];
+      if (colIndex === null) return items;
+      for (let r = 0; r < tables.length; r++) {
+        const row = tables[r] || [];
+        // require left-most column to be a date-like cell
+        if (!isDateCell(row[0])) continue;
+        if (colIndex >= row.length) continue;
+        const cell = row[colIndex];
+        if (cell == null) continue;
+        const text = cell.toString();
+        const matches = text.match(amountRegex);
+        if (!matches) continue;
+        matches.forEach((m: string) => {
+          const num = parseNumber(m);
+          if (!isNaN(num)) {
+            items.push({ value: Math.abs(num), rowIndex: r, colIndex, raw: text });
+          }
+        });
+      }
+      return items;
+    };
+
+    let debits = collectColumnValues(debitCol);
+    let credits = collectColumnValues(creditCol);
+
+    // If none found for either, fallback to scanning cells heuristics (legacy)
+    if ((debits.length === 0 && debitCol === null) || (credits.length === 0 && creditCol === null)) {
+      const legacyDebits: Array<any> = [];
+      const legacyCredits: Array<any> = [];
+      for (let r = 0; r < tables.length; r++) {
+        const row = tables[r] || [];
+        // only consider rows where left-most column looks like a date
+        if (!isDateCell(row[0])) continue;
+        const rowText = row.map((c) => (c ?? "")).join(" ").toString().toLowerCase();
+        for (let colIndex = 0; colIndex < row.length; colIndex++) {
+          const cell = row[colIndex];
+          const text = (cell ?? "").toString();
+          const lc = text.toLowerCase();
+          const matches = text.match(/([0-9]{1,3}(?:[0-9,]*)(?:\.\d+)?)/g);
+          if (!matches) continue;
+          matches.forEach((m: string) => {
+            const num = parseFloat(m.replace(/,/g, ""));
+            if (isNaN(num)) return;
+            if (/\bcr\b|credit/.test(lc) || /\(cr\)/.test(lc)) {
+              legacyCredits.push({ value: num, rowIndex: r, colIndex, raw: text });
+            } else if (/\bdr\b|debit|withdrawal/.test(lc) || /-\d/.test(text)) {
+              legacyDebits.push({ value: num, rowIndex: r, colIndex, raw: text });
+            } else {
+              if (/credit|\bcr\b/.test(rowText)) {
+                legacyCredits.push({ value: num, rowIndex: r, colIndex, raw: text });
+              } else if (/debit|\bdr\b|withdrawal/.test(rowText)) {
+                legacyDebits.push({ value: num, rowIndex: r, colIndex, raw: text });
+              }
+            }
+          });
+        }
+      }
+      if (debits.length === 0) debits = legacyDebits;
+      if (credits.length === 0) credits = legacyCredits;
+    }
+
+    // sort descending
+    debits.sort((a, b) => b.value - a.value);
+    credits.sort((a, b) => b.value - a.value);
+
+    return { debits: debits.slice(0, 5), credits: credits.slice(0, 5) };
+  };
+
+  const exportTopDebitCreditCSV = (debits: Array<any>, credits: Array<any>) => {
+    const hasDebits = debits && debits.length > 0;
+    const hasCredits = credits && credits.length > 0;
+    if (!hasDebits && !hasCredits) {
+      alert("No debit or credit entries found to export");
+      return;
+    }
+
+    const quote = (s: any) => `"${String(s ?? "").replace(/"/g, '""')}"`;
+    const maxRows = Math.max(debits?.length || 0, credits?.length || 0);
+    const rows: string[] = [];
+    rows.push("debit,credit");
+    for (let i = 0; i < maxRows; i++) {
+      const dRaw = debits && debits[i] ? debits[i].raw : "";
+      const cRaw = credits && credits[i] ? credits[i].raw : "";
+      rows.push(`${quote(dRaw)},${quote(cRaw)}`);
+    }
+
+    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `top5_debit_credit.csv`;
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportTopDebitCredit = () => {
+    const { debits, credits } = parseTopAmounts(extractedTables as Array<Array<any>>);
+    exportTopDebitCreditCSV(debits, credits);
+  };
+
   const handleClearGallery = () => {
     gallery.forEach((item) => URL.revokeObjectURL(item.url));
     setGallery([]);
@@ -458,7 +612,37 @@ function App() {
   };
 
   return (
-    <div>
+    <div style={{ paddingBottom: "80px", marginBottom: "80px" }}>
+      {/* Loading Bar */}
+      {(isLoading || isLoadingDOB || isLoadingText || isLoadingTables || isLoadingAadhar) && (
+        <div
+          style={{
+            position: "fixed",
+            top: "0",
+            left: "0",
+            right: "0",
+            height: "4px",
+            backgroundColor: "#636fe9",
+            animation: "progress 1s ease-in-out infinite",
+            zIndex: "10000",
+          }}
+        >
+          <style>{`
+            @keyframes progress {
+              0% {
+                width: 0%;
+              }
+              50% {
+                width: 80%;
+              }
+              100% {
+                width: 100%;
+              }
+            }
+          `}</style>
+        </div>
+      )}
+      
       {/* Logo */}
       <div
         style={{
@@ -666,54 +850,54 @@ function App() {
             <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
               <button
                 onClick={handleExtractText}
-                disabled={isLoading}
+                  disabled={isLoadingText}
                 style={{
-                  backgroundColor: isLoading ? "#ccc" : "#636fe9",
+                    backgroundColor: isLoadingText ? "#ccc" : "#636fe9",
                   color: "white",
                   border: "none",
                   borderRadius: "8px",
                   padding: "12px 20px",
                   fontSize: "16px",
-                  cursor: isLoading ? "not-allowed" : "pointer",
+                    cursor: isLoadingText ? "not-allowed" : "pointer",
                   fontWeight: "500",
                   transition: "background-color 0.3s ease",
                 }}
                 onMouseEnter={(e) => {
-                  if (!isLoading)
+                    if (!isLoadingText)
                     e.currentTarget.style.backgroundColor = "#4a5bd1";
                 }}
                 onMouseLeave={(e) => {
-                  if (!isLoading)
+                    if (!isLoadingText)
                     e.currentTarget.style.backgroundColor = "#636fe9";
                 }}
               >
-                {isLoading ? "Extracting..." : "Extract All Text"}
+                  {isLoadingText ? "Extracting..." : "Extract All Text"}
               </button>
               {selectedFile.type === "application/pdf" && (
                 <button
                   onClick={handleExtractTables}
-                  disabled={isLoading}
+                    disabled={isLoadingTables}
                   style={{
-                    backgroundColor: isLoading ? "#ccc" : "#28a745",
+                      backgroundColor: isLoadingTables ? "#ccc" : "#28a745",
                     color: "white",
                     border: "none",
                     borderRadius: "8px",
                     padding: "12px 20px",
                     fontSize: "16px",
-                    cursor: isLoading ? "not-allowed" : "pointer",
+                      cursor: isLoadingTables ? "not-allowed" : "pointer",
                     fontWeight: "500",
                     transition: "background-color 0.3s ease",
                   }}
                   onMouseEnter={(e) => {
-                    if (!isLoading)
+                      if (!isLoadingTables)
                       e.currentTarget.style.backgroundColor = "#218838";
                   }}
                   onMouseLeave={(e) => {
-                    if (!isLoading)
+                      if (!isLoadingTables)
                       e.currentTarget.style.backgroundColor = "#28a745";
                   }}
                 >
-                  {isLoading ? "Extracting..." : "Extract Tables"}
+                    {isLoadingTables ? "Extracting..." : "Extract Tables"}
                 </button>
               )}
             </div>
@@ -1052,29 +1236,50 @@ function App() {
               </button>
             )}
           </div>
+  {extractedTables.length > 0 && (
+    <button
+      onClick={handleDownloadCSV}
+      style={{
+        backgroundColor: "#28a745",
+        color: "white",
+        border: "none",
+        borderRadius: "8px",
+        padding: "8px 16px",
+        fontSize: "14px",
+        cursor: "pointer",
+        fontWeight: "500",
+        transition: "background-color 0.3s ease",
+        marginLeft: "20px",
+      }}
+      onMouseEnter={(e) =>
+        (e.currentTarget.style.backgroundColor = "#218838")
+      }
+      onMouseLeave={(e) =>
+        (e.currentTarget.style.backgroundColor = "#28a745")
+      }
+    >
+      📥 Download CSV
+    </button>
+  )}
           {extractedTables.length > 0 && (
-            <button
-              onClick={handleDownloadCSV}
-              style={{
-                backgroundColor: "#28a745",
-                color: "white",
-                border: "none",
-                borderRadius: "8px",
-                padding: "8px 16px",
-                fontSize: "14px",
-                cursor: "pointer",
-                fontWeight: "500",
-                transition: "background-color 0.3s ease",
-              }}
-              onMouseEnter={(e) =>
-                (e.currentTarget.style.backgroundColor = "#218838")
-              }
-              onMouseLeave={(e) =>
-                (e.currentTarget.style.backgroundColor = "#28a745")
-              }
-            >
-              📥 Download CSV
-            </button>
+            <div style={{ display: "inline-flex", gap: "8px", marginLeft: "10px" }}>
+              <button
+                onClick={handleExportTopDebitCredit}
+                style={{
+                  backgroundColor: "#6a5acd",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "8px",
+                  padding: "8px 12px",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                  fontWeight: "500",
+                }}
+                title="Export top 5 highest debits and credits"
+              >
+                📥 Export Top 5 Debit & Credit
+              </button>
+            </div>
           )}
         </div>
 
@@ -1336,31 +1541,31 @@ function App() {
             </p>
             <button
               onClick={handleExtractAadhar}
-              disabled={!selectedFile || isLoading}
+              disabled={!selectedFile || isLoadingAadhar}
               style={{
                 backgroundColor:
-                  selectedFile && !isLoading ? "#636fe9" : "#ccc",
+                  selectedFile && !isLoadingAadhar ? "#636fe9" : "#ccc",
                 color: "white",
                 border: "none",
                 borderRadius: "8px",
                 padding: "12px 20px",
                 fontSize: "16px",
-                cursor: selectedFile && !isLoading ? "pointer" : "not-allowed",
+                  cursor: selectedFile && !isLoadingAadhar ? "pointer" : "not-allowed",
                 fontWeight: "500",
                 margin: "5px",
                 transition: "background-color 0.3s ease",
               }}
               onMouseEnter={(e) => {
-                if (selectedFile && !isLoading)
+                  if (selectedFile && !isLoadingAadhar)
                   e.currentTarget.style.backgroundColor = "#4a5bd1";
               }}
               onMouseLeave={(e) => {
-                if (selectedFile && !isLoading)
+                  if (selectedFile && !isLoadingAadhar)
                   e.currentTarget.style.backgroundColor = "#636fe9";
               }}
             >
               {selectedFile
-                ? isLoading
+                  ? isLoadingAadhar
                   ? "Extracting..."
                   : "Extract Aadhar Number"
                 : "No doc selected"}
@@ -2369,6 +2574,29 @@ function App() {
           placeholder="Formatted text box"
         />
       </div> */}
+
+      {/* Footer Watermark */}
+      <div
+        style={{
+          position: "fixed",
+          bottom: "0",
+          left: "0",
+          right: "0",
+          padding: "8px 30px",
+          paddingBottom: "2px",
+          backgroundColor: "#f8f9fa",
+          borderTop: "1px solid #e0e0e0",
+          textAlign: "center",
+          fontSize: "12px",
+          color: "#666",
+          fontFamily: "Arial, sans-serif",
+          width: "100%",
+          boxSizing: "border-box",
+          zIndex: "9999",
+        }}
+      >
+        OCR Hunter v1.0 © 2025 AIBI Technologies. All rights reserved.
+      </div>
     </div>
   );
 }

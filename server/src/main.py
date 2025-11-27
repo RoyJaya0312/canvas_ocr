@@ -1,20 +1,108 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
-import pytesseract
 import pdfplumber
 import io
 import os
+import shutil
+import platform
 import pandas as pd
 import re
+import logging
 from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
 
+load_dotenv()
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
 
-# Set tesseract path
-TESSERACT_PATH = r"C:\Users\Jayasmita\Desktop\pytesseract\tesseract.exe"
-pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+# Try to import pytesseract
+try:
+    import pytesseract
+    PYTESSERACT_AVAILABLE = True
+except ImportError:
+    PYTESSERACT_AVAILABLE = False
+    logger.warning("⚠️  pytesseract not installed. Run: pip install pytesseract")
+
+def _locate_tesseract():
+    """Locate Tesseract binary from .env or common locations"""
+    
+    # Priority 1: .env file
+    env_path = os.getenv('TESSERACT_CMD')
+    if env_path and env_path.strip():
+        env_path = os.path.normpath(env_path.strip())
+        if os.path.isfile(env_path):
+            return env_path
+        logger.warning(f"⚠️  TESSERACT_CMD path not found: {env_path}")
+    
+    # Priority 2: System PATH
+    which_path = shutil.which('tesseract')
+    if which_path:
+        return which_path
+    
+    # Priority 3: Common installation paths
+    system = platform.system().lower()
+    common_paths = {
+        'windows': [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        ],
+        'darwin': [
+            "/usr/local/bin/tesseract",
+            "/opt/homebrew/bin/tesseract",
+        ],
+        'linux': [
+            "/usr/bin/tesseract",
+            "/usr/local/bin/tesseract",
+        ]
+    }
+    
+    for path in common_paths.get(system, []):
+        if os.path.isfile(path):
+            return path
+    
+    return None
+
+# Initialize Tesseract
+TESSERACT_PATH = _locate_tesseract()
+TESSERACT_AVAILABLE = False
+
+if not PYTESSERACT_AVAILABLE:
+    logger.error("❌ pytesseract library not installed!")
+    logger.error("   Run: pip install pytesseract")
+elif TESSERACT_PATH:
+    try:
+        pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+        TESSERACT_AVAILABLE = True
+        logger.info(f"✅ Using Tesseract: {TESSERACT_PATH}")
+    except Exception as e:
+        logger.exception("Failed to configure Tesseract")
+else:
+    logger.error("❌ Tesseract OCR not found!")
+    logger.error("")
+    logger.error("🐳 OPTION 1: Use Docker (Recommended)")
+    logger.error("   docker-compose up -d")
+    logger.error("")
+    logger.error("📝 OPTION 2: Set path in .env file")
+    logger.error("   1. Copy .env.example to .env")
+    logger.error("   2. Set: TESSERACT_CMD=C:/path/to/tesseract.exe")
+    logger.error("")
+
+# App runtime config from .env
+APP_HOST = os.getenv('APP_HOST', '127.0.0.1')
+APP_PORT = int(os.getenv('APP_PORT', '5001'))
+DEBUG = os.getenv('DEBUG', 'true').lower() in ('1', 'true', 'yes')
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 20 * 1024 * 1024))
+
+# CORS configuration
+cors_origins = os.getenv('CORS_ORIGINS')
+if cors_origins and cors_origins != '*':
+    origins = [o.strip() for o in cors_origins.split(',') if o.strip()]
+    CORS(app, resources={r"/*": {"origins": origins}})
+else:
+    CORS(app)
 
 def extract_text_from_image(image_file):
     """Extract text from image file using Tesseract OCR"""
@@ -76,7 +164,7 @@ def process_pdf_page_ocr(page):
     """Helper function to process a single PDF page for OCR"""
     try:
         # Increased resolution to 450 for better accuracy
-        page_image = page.to_image(resolution=800).original
+        page_image = page.to_image(resolution=500).original
         # Custom config for better OCR accuracy: OEM 3 (default engine + neural nets), PSM 6 (uniform block of text)
         custom_config = r'--oem 3 --psm 6'
         page_text = pytesseract.image_to_string(page_image, config=custom_config)
@@ -2072,7 +2160,17 @@ def extract_formatted_text():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({'status': 'ok', 'message': 'Server is running'}), 200
+    # Provide tesseract availability in health response to help operators
+    health = {'status': 'ok', 'message': 'Server is running'}
+    try:
+        health['tesseract_available'] = TESSERACT_AVAILABLE
+        health['tesseract_path'] = TESSERACT_PATH if TESSERACT_AVAILABLE else None
+    except NameError:
+        # If variables are not set for some reason, report unknown
+        health['tesseract_available'] = False
+        health['tesseract_path'] = None
+
+    return jsonify(health), 200
 
 @app.route('/extract-aadhar', methods=['POST'])
 def extract_aadhar():
@@ -2118,17 +2216,17 @@ def extract_aadhar():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    port = 5001
-    print("Starting OCR Flask Server...")
-    print(f"Tesseract path: {TESSERACT_PATH}")
-    print(f"Server running on http://localhost:{port}")
-    print("\n⚠️  IMPORTANT: Keep this terminal window open while using the app!\n")
+    # Use configured host/port/debug values (from env or defaults)
+    port = APP_PORT
+    logger.info("Starting OCR Flask Server...")
+    logger.info(f"Tesseract path: {TESSERACT_PATH}")
+    logger.info(f"Server running on http://{APP_HOST}:{port}")
 
     try:
-        app.run(debug=True, host='127.0.0.1', port=port)
+        app.run(debug=DEBUG, host=APP_HOST, port=port)
     except OSError as e:
         if "address already in use" in str(e).lower():
-            print(f"\n❌ Port {port} is already in use!")
-            print("Try changing to a different port (5002, 5003, etc.)")
+            logger.error(f"Port {port} is already in use!")
+            logger.error("Try changing to a different port (5002, 5003, etc.)")
         else:
             raise
